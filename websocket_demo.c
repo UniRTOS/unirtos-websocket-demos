@@ -20,8 +20,10 @@
 #include "qcm_websocket.h"
 #include "qcm_vtls_cfg.h"
 #include "qosa_virtual_file.h"
-#include "unirtos_app_init_registry.h"
-
+#include "qcm_proj_config.h"
+#if (defined(CONFIG_QOSA_BK7238_PLATFORM_FUNC) ||defined(CONFIG_QOSA_BK7258_PLATFORM_FUNC) || defined(CONFIG_QOSA_ECR6600_PLATFORM_FUNC)) 
+#include "qosa_wlan.h"
+#endif
 #define QOS_LOG_TAG                   LOG_TAG
 
 #define WEBSOCKET_DEMO_TASK_STACK_SIZE 4096 /*!< Web demo task stack size in bytes */
@@ -113,7 +115,66 @@ typedef struct
 
 // Client context
 static web_demo_ctx_t g_web_ctx = {0};
+#if (defined(CONFIG_QOSA_BK7258_PLATFORM_FUNC) || defined(CONFIG_QOSA_BK7238_PLATFORM_FUNC) || defined(CONFIG_QOSA_ECR6600_PLATFORM_FUNC)) 
 
+static qosa_sem_t  wifi_sem = QOSA_NULL;
+
+static void qcm_socket_app_wifi_event_cb(void *param)
+{
+    qosa_wlan_event_msg_t  *event_info = (qosa_wlan_event_msg_t *)param;
+
+    switch(event_info->event)
+    {
+    case QOSA_WLAN_EVT_STA_CONNECTED:
+        {
+            QLOGI("wlan connected!\n");
+        }
+        break;
+    case QOSA_WLAN_EVT_STA_GOT_IP:
+        {
+            QLOGI("wlan got ip!\n");
+            QLOGI("wifi_sem=%p\n", wifi_sem);
+            if(wifi_sem != QOSA_NULL)
+                qosa_sem_release(wifi_sem);
+        }
+        break;
+    case QOSA_WLAN_EVT_STA_DISCONNECTED:
+        {
+            QLOGI("wlan disconnected!\n");            
+        }
+        break;
+    case QOSA_WLAN_EVT_STA_PASSWORD_WRONG:
+    case QOSA_WLAN_EVT_STA_NO_AP_FOUND:
+    case QOSA_WLAN_EVT_STA_CONNECT_FAILED:
+        {
+            QLOGI("wlan connect failed!\n");
+        }
+        break;
+    default:
+        break;
+    }
+}
+static int qcm_socket_app_wifi_active(void)
+{
+    qosa_wlan_network_t  wlan_cfg = {0};
+    qosa_wlan_sta_config_t sta_cfg = {0};
+    qosa_wlan_driver_init();
+
+    sta_cfg.dhcp_enabled = QOSA_TRUE;    
+    qosa_memcpy(sta_cfg.ssid, "cbq666", qosa_strlen("cbq666"));
+    qosa_memcpy(sta_cfg.pwd, "12345678", qosa_strlen("12345678"));
+    sta_cfg.ip.ipv4.addr_type = QOSA_WLAN_ADDR_TYPE_DHCP;
+
+    wlan_cfg.mode = QOSA_WLAN_MODE_STA;
+    wlan_cfg.sta_cfg = &sta_cfg;
+    
+    qosa_wlan_register_status_cb(qcm_socket_app_wifi_event_cb);
+
+    qosa_wlan_start(&wlan_cfg);
+    
+    return 0;
+}
+#endif
 /*===========================================================================
  *  Functions
  ===========================================================================*/
@@ -198,9 +259,11 @@ static void unir_web_demo_cfg_init(int config_id, qcm_ssl_config_t *ssl_config)
     // the other is to get all configuration items and then configure the structure
     // Get configuration pointer and set connection parameters
     cfg_ptr = qcm_ws_cfg_get_all(config_id);
+#if !(defined(CONFIG_QOSA_BK7238_PLATFORM_FUNC) ||defined(CONFIG_QOSA_BK7258_PLATFORM_FUNC) || defined(CONFIG_QOSA_ECR6600_PLATFORM_FUNC))   
     cfg_ptr->conn.sim_cid = WEBSOCKET_DEMO_SIMID;
     cfg_ptr->conn.pdp_cid = WEBSOCKET_DEMO_PDPID;
-
+#endif
+    QOSA_UNUSED(cfg_ptr);
     // Configure connection URL separately
     if (WEBSOCKET_DEMO_TEST_WSS == 0)
     {
@@ -523,6 +586,22 @@ static void unir_web_demo_app_init(void *argv)
 
     // Wait for system initialization to complete
     qosa_task_sleep_sec(10);
+#if (defined(CONFIG_QOSA_BK7238_PLATFORM_FUNC) ||defined(CONFIG_QOSA_BK7258_PLATFORM_FUNC) || defined(CONFIG_QOSA_ECR6600_PLATFORM_FUNC)) 
+    
+    qosa_sem_create(&wifi_sem, 0);
+    QOSA_ASSERT(wifi_sem != QOSA_NULL);
+    QLOGI("wifi_sem=%p\n", wifi_sem);
+    if(qcm_socket_app_wifi_active() != 0)
+    {
+        QLOGE("wlan error");
+        return;
+    }
+    qosa_sem_wait(wifi_sem, QOSA_WAIT_FOREVER);
+    QLOGI("wlan actived!\n");
+    qosa_wlan_dns_server_t dns_server[1]= {0};
+    qosa_strcpy(dns_server[0].address, "8.8.8.8");
+    qosa_wlan_set_dns_server(dns_server, 1);
+#endif
     // Create message queue for handling WebSocket related events
     qosa_msgq_create(&g_web_ctx.msgq, sizeof(web_demo_msg_t), WEBSOCKET_DEMO_MSG_MAX_CNT);
 
